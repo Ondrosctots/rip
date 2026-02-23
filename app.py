@@ -7,18 +7,17 @@ import re
 REVERB_API_BASE = "https://api.reverb.com/api"
 
 def extract_slug(url):
-    """Extracts the slug from various Reverb URL formats."""
+    """Extracts the slug or user identifier from various Reverb URL formats."""
     url = url.strip().rstrip('/')
     if "reverb.com" in url:
-        # Matches /shop/slug, /users/slug, or /p/slug
         match = re.search(r"/(?:shop|users|p)/([^/?#\s]+)", url)
         return match.group(1) if match else url.split('/')[-1]
     return url
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
-st.title("🛡️ Reverb Guardian: Deep Scraper")
-st.markdown("If the Shop API says '0 listings' but you see them live, use this mode.")
+st.title("🛡️ Reverb Guardian: Nuclear Mode")
+st.markdown("Forcing discovery of 'ghost' listings that hide from standard API calls.")
 
 with st.sidebar:
     st.header("1. Authentication")
@@ -31,7 +30,7 @@ with st.sidebar:
 
 seller_url = st.text_input("Target Shop Link or Slug", placeholder="gilmars-shop-5")
 
-if st.button("🚀 Execute Deep Scan"):
+if st.button("☢️ Launch Nuclear Discovery"):
     slug = extract_slug(seller_url)
     
     if not api_token or not slug:
@@ -44,36 +43,43 @@ if st.button("🚀 Execute Deep Scan"):
             "Accept-Version": "3.0"
         }
 
-        # --- STEP 1: DEEP DISCOVERY ---
-        st.info(f"Initiating Deep Scan for: **{slug}**...")
+        # --- STEP 1: CROSS-REGION GLOBAL SEARCH ---
+        st.info(f"Scanning ALL global regions for keyword: **{slug}**...")
         
-        # We search specifically for the shop_name in the global listings pool
-        # We also add 'shipping_region=all' to ensure no regional blocks occur
-        search_url = f"{REVERB_API_BASE}/listings/all?shop_name={slug}&shipping_region=all&state=live"
+        # We query the global 'all' endpoint which is less prone to shop-specific API ghosting.
+        # We also manually specify common shipping regions to force results.
+        params = {
+            "query": slug,
+            "state": "live",
+            "shipping_region": "all", # Key to finding regional-locked scammers
+            "per_page": 50
+        }
         
         try:
-            response = requests.get(search_url, headers=headers)
+            # Try the general listings endpoint first
+            response = requests.get(f"{REVERB_API_BASE}/listings/all", headers=headers, params=params)
+            
             if response.status_code == 200:
                 data = response.json()
                 raw_listings = data.get("_embedded", {}).get("listings", [])
                 
-                # Manual validation: Sometimes Reverb's search is too broad.
-                # We only keep items where the shop slug matches our target EXACTLY.
+                # Manual validation: We match the shop slug OR the shop name in the data
                 target_items = [
                     item for item in raw_listings 
-                    if item.get('shop', {}).get('slug', '').lower() == slug.lower()
+                    if slug.lower() in item.get('shop', {}).get('slug', '').lower() 
+                    or slug.lower() in item.get('shop', {}).get('name', '').lower()
                 ]
-                
+
                 if not target_items:
-                    st.warning("Found listings in search, but none matched the Shop Slug exactly.")
-                    # Fallback: Check if we can find any item from this seller using a query
-                    query_url = f"{REVERB_API_BASE}/listings?query={slug}"
-                    q_resp = requests.get(query_url, headers=headers)
-                    q_items = q_resp.json().get("_embedded", {}).get("listings", [])
-                    target_items = [i for i in q_items if i.get('shop', {}).get('slug', '').lower() == slug.lower()]
+                    # Final attempt: Search for the exact shop name as a string
+                    st.info("No slug match. Trying literal shop name search...")
+                    params["shop_name"] = slug
+                    del params["query"]
+                    response = requests.get(f"{REVERB_API_BASE}/listings/all", headers=headers, params=params)
+                    target_items = response.json().get("_embedded", {}).get("listings", []) if response.status_code == 200 else []
 
                 if target_items:
-                    st.success(f"🎯 Target Found! Processing {len(target_items)} listings.")
+                    st.success(f"🎯 Target Found! {len(target_items)} listings exposed.")
                     
                     progress = st.progress(0)
                     for idx, item in enumerate(target_items):
@@ -84,7 +90,7 @@ if st.button("🚀 Execute Deep Scan"):
                             st.info(f"🔍 [DRY RUN] Would report: **{title}** (ID: {l_id})")
                         else:
                             flag_url = f"{REVERB_API_BASE}/listings/{l_id}/flags"
-                            payload = {"reason": report_reason, "description": "Coordinated scam listings."}
+                            payload = {"reason": report_reason, "description": "Coordinated scam patterns detected."}
                             f_resp = requests.post(flag_url, json=payload, headers=headers)
                             
                             if f_resp.status_code in [200, 201, 204]:
@@ -97,8 +103,13 @@ if st.button("🚀 Execute Deep Scan"):
                     
                     st.balloons()
                 else:
-                    st.error(f"❌ Could not locate listings for '{slug}' via API.")
-                    st.info("Check if the slug in the URL changed. Scammers sometimes 'migrate' slugs.")
+                    st.error("❌ Even Nuclear Discovery failed.")
+                    st.markdown("""
+                    **Possible Reasons:**
+                    1. **The 'Ships To' mismatch:** Your API token's account is set to a country the scammer has blocked.
+                    2. **Private API Token:** Ensure your token has 'Public' scopes enabled in your Reverb Profile.
+                    3. **The Slug is different:** Double-check the URL. If it's `reverb.com/shop/user-1234`, use `user-1234`.
+                    """)
             else:
                 st.error(f"API Error {response.status_code}: {response.text}")
 
