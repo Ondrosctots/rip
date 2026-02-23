@@ -8,26 +8,37 @@ import re
 REVERB_API_BASE = "https://api.reverb.com/api"
 
 def parse_ids_from_html(html_content):
-    """Extracts listing IDs from raw HTML string."""
-    soup = BeautifulSoup(html_content, "html.parser")
+    """
+    Highly aggressive extraction of Reverb Listing IDs from HTML source.
+    Looks for data attributes, URL paths, and JSON blobs.
+    """
     listing_ids = set()
     
-    # Method A: Data attributes
-    for tag in soup.find_all(attrs={"data-listing-id": True}):
-        listing_ids.add(tag["data-listing-id"])
-        
-    # Method B: URL patterns
-    links = soup.find_all("a", href=re.compile(r"/item/(\d+)"))
-    for link in links:
-        match = re.search(r"/item/(\d+)", link['href'])
-        if match:
-            listing_ids.add(match.group(1))
+    # 1. Standard Reverb data attribute
+    # Example: data-listing-id="12345678"
+    found_data_attrs = re.findall(r'data-listing-id=["\'](\d+)["\']', html_content)
+    listing_ids.update(found_data_attrs)
+    
+    # 2. Standard URL pattern in links
+    # Example: /item/12345678-gibson-les-paul
+    found_urls = re.findall(r'/item/(\d+)-', html_content)
+    listing_ids.update(found_urls)
+
+    # 3. JSON Object patterns (Found in script tags)
+    # Example: "id":12345678,"title"
+    found_json = re.findall(r'["\']id["\']\s*:\s*(\d{7,10})', html_content)
+    listing_ids.update(found_json)
+
+    # 4. Canonical link tags
+    # Example: <link rel="canonical" href=".../item/12345678">
+    found_canon = re.findall(r'reverb\.com/item/(\d+)', html_content)
+    listing_ids.update(found_canon)
             
-    return list(listing_ids)
+    return sorted(list(listing_ids))
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
-st.title("🛡️ Reverb Guardian: Bypass Mode")
+st.title("🛡️ Reverb Guardian: Deep Bypass")
 
 with st.sidebar:
     st.header("1. Authentication")
@@ -38,56 +49,49 @@ with st.sidebar:
     dry_run = st.checkbox("Dry Run (Safe Mode)", value=True)
     delay = st.slider("Request Delay (Seconds)", 1, 10, 2)
 
-st.subheader("Method A: Automatic Scrape")
-shop_link = st.text_input("Full Shop URL", placeholder="https://reverb.com/shop/gilmars-shop-5")
-
-st.divider()
-
-st.subheader("Method B: Manual Paste (Use if 403 error occurs)")
-manual_html = st.text_area("Paste Page Source Here", height=200, help="Right-click shop page -> View Page Source -> Copy All -> Paste Here")
+st.subheader("Bypass Method: Manual Paste")
+st.info("If Method A failed (403), open the shop in your browser, right-click -> 'View Page Source', and paste it below.")
+manual_html = st.text_area("Paste Page Source Here", height=300)
 
 if st.button("🚀 Process Listings"):
-    found_ids = []
-    
-    if manual_html.strip():
-        st.info("Parsing IDs from manual HTML paste...")
-        found_ids = parse_ids_from_html(manual_html)
-    elif shop_link:
-        st.info("Attempting automatic scrape...")
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
-        try:
-            res = requests.get(shop_link, headers=headers)
-            if res.status_code == 200:
-                found_ids = parse_ids_from_html(res.text)
-            else:
-                st.error(f"Automatic scrape blocked (Error {res.status_code}). Please use Method B.")
-        except Exception as e:
-            st.error(f"Error: {e}")
-            
-    if not found_ids:
-        st.warning("No listing IDs found. Ensure you are on the shop's main page.")
+    if not api_token:
+        st.error("Please enter your Reverb API Token in the sidebar.")
+    elif not manual_html.strip():
+        st.error("Please paste the page source code first.")
     else:
-        st.success(f"🎯 Target Acquired: {len(found_ids)} listings found.")
-        api_headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/hal+json",
-            "Accept": "application/hal+json",
-            "Accept-Version": "3.0"
-        }
-        
-        progress = st.progress(0)
-        for idx, l_id in enumerate(found_ids):
-            if dry_run:
-                st.info(f"🔍 [DRY RUN] Ready to report: {l_id}")
-            else:
-                flag_url = f"{REVERB_API_BASE}/listings/{l_id}/flags"
-                payload = {"reason": report_reason, "description": "Bulk fraudulent listings."}
-                f_resp = requests.post(flag_url, json=payload, headers=api_headers)
-                if f_resp.status_code in [200, 201, 204]:
-                    st.write(f"🚩 Reported ID: {l_id}")
-                else:
-                    st.error(f"Failed {l_id}: {f_resp.status_code}")
+        st.info("Scanning code for listing patterns...")
+        found_ids = parse_ids_from_html(manual_html)
             
-            progress.progress((idx + 1) / len(found_ids))
-            time.sleep(delay)
-        st.balloons()
+        if not found_ids:
+            st.error("❌ Still no listing IDs detected in the code.")
+            st.warning("Ensure you copied the *Source Code* (Ctrl+U) and not just the text on the screen.")
+        else:
+            st.success(f"🎯 Target Acquired: {len(found_ids)} listings found.")
+            
+            api_headers = {
+                "Authorization": f"Bearer {api_token}",
+                "Content-Type": "application/hal+json",
+                "Accept": "application/hal+json",
+                "Accept-Version": "3.0"
+            }
+            
+            progress = st.progress(0)
+            for idx, l_id in enumerate(found_ids):
+                if dry_run:
+                    st.info(f"🔍 [DRY RUN] Found Listing: **{l_id}**")
+                else:
+                    flag_url = f"{REVERB_API_BASE}/listings/{l_id}/flags"
+                    payload = {
+                        "reason": report_reason, 
+                        "description": "Reporting shop-wide fraudulent patterns identified via deep scan."
+                    }
+                    f_resp = requests.post(flag_url, json=payload, headers=api_headers)
+                    if f_resp.status_code in [200, 201, 204]:
+                        st.write(f"🚩 Reported ID: {l_id}")
+                    else:
+                        st.error(f"Failed {l_id}: {f_resp.status_code}")
+                
+                progress.progress((idx + 1) / len(found_ids))
+                time.sleep(delay)
+            
+            st.balloons()
