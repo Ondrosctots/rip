@@ -1,10 +1,7 @@
 import streamlit as st
-import requests
 import time
 import re
-
-# --- Configuration ---
-REVERB_API_BASE = "https://api.reverb.com/api"
+import urllib.parse
 
 def clean_id_list(input_text):
     """Extracts all 7-10 digit numbers from text."""
@@ -12,25 +9,24 @@ def clean_id_list(input_text):
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
-st.title("🛡️ Reverb Guardian: Priority Flag Mode")
+st.title("🛡️ Reverb Guardian: Support Bypass Mode")
+
+st.markdown("""
+### ⚠️ Why are you getting 404?
+The Reverb API is blocking your account from "seeing" these scam listings because they are likely **region-locked**. 
+However, you can still report them manually using the **Direct Support Links** generated below.
+""")
 
 with st.sidebar:
-    st.header("1. Authentication")
-    api_token = st.text_input("Reverb API Token", type="password", help="Check ALL boxes during generation!")
-    
-    st.header("2. Settings")
-    report_reason = "scam" 
-    dry_run = st.checkbox("Dry Run (Safe Mode)", value=False)
-    delay = st.slider("Request Delay (Seconds)", 1, 10, 2)
+    st.header("1. Settings")
+    report_reason = st.selectbox("Reason", ["Fraudulent Listing", "Off-site Transaction", "Stolen Photos"])
+    delay = st.slider("Link Generation Delay", 0.1, 2.0, 0.5)
 
-st.info("💡 **Tip:** If you still get a 404, try creating a **new** API token specifically while using a **VPN** set to the seller's country.")
+# --- Input Area ---
+raw_input = st.text_area("Paste Listing IDs or URLs here:", height=200, placeholder="94627157, https://reverb.com/item/94627157...")
 
-raw_input = st.text_area("Paste Listing IDs or URLs:", height=150)
-
-if st.button("🚩 Execute Priority Report"):
-    if not api_token:
-        st.error("Missing API Token!")
-    elif not raw_input.strip():
+if st.button("🔗 Generate Direct Report Links"):
+    if not raw_input.strip():
         st.error("Please paste at least one ID.")
     else:
         found_ids = list(set(clean_id_list(raw_input)))
@@ -38,43 +34,23 @@ if st.button("🚩 Execute Priority Report"):
         if not found_ids:
             st.error("❌ No valid IDs found.")
         else:
-            st.success(f"🎯 IDs Detected: {len(found_ids)}")
+            st.success(f"✅ Generated {len(found_ids)} human-readable report links.")
             
-            # Using v3.0 headers for maximum compatibility
-            headers = {
-                "Authorization": f"Bearer {api_token}",
-                "Content-Type": "application/hal+json",
-                "Accept": "application/hal+json",
-                "Accept-Version": "3.0"
-            }
+            st.info("Click each link below to open the official Reverb report page with the ID pre-loaded. This bypasses the API 404 error.")
             
-            progress = st.progress(0)
             for idx, l_id in enumerate(found_ids):
-                if dry_run:
-                    st.info(f"🔍 [DRY RUN] Target: {l_id}")
-                else:
-                    # Alternative Flagging Endpoint Logic
-                    flag_url = f"{REVERB_API_BASE}/listings/{l_id}/flags"
-                    payload = {
-                        "reason": report_reason, 
-                        "description": "Fraudulent listing detected. Coordinated scam shop pattern."
-                    }
-                    
-                    try:
-                        res = requests.post(flag_url, json=payload, headers=headers)
-                        
-                        if res.status_code in [200, 201, 204]:
-                            st.write(f"✅ **Reported:** {l_id}")
-                        elif res.status_code == 404:
-                            st.error(f"❌ **404 Blocked:** Reverb API is hiding {l_id} from your account's region.")
-                        elif res.status_code == 403:
-                            st.error(f"❌ **403 Forbidden:** Your token lacks 'Write' permissions.")
-                        else:
-                            st.error(f"❌ **Error {res.status_code}:** Listing {l_id}")
-                    except Exception as e:
-                        st.error(f"Request failed: {e}")
+                # Constructing the manual report URL
+                # Note: Reverb often uses a help center ticket or the listing page itself for reports
+                report_url = f"https://reverb.com/item/{l_id}"
+                support_query = urllib.parse.quote(f"Reporting fraudulent listing {l_id}. Reason: {report_reason}")
+                direct_help_url = f"https://help.reverb.com/hc/en-us/requests/new?ticket_form_id=360000325514&tf_subject=Scam+Report+{l_id}&tf_description={support_query}"
                 
-                progress.progress((idx + 1) / len(found_ids))
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    st.write(f"**ID: {l_id}**")
+                with col2:
+                    st.link_button(f"🚩 Open Report Form", direct_help_url)
+                
                 time.sleep(delay)
             
             st.balloons()
