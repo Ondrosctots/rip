@@ -7,18 +7,15 @@ import re
 REVERB_API_BASE = "https://api.reverb.com/api"
 
 def extract_shop_slug(url):
-    """Extracts the identifier from Reverb shop or user URLs."""
     url = url.strip().rstrip('/')
-    # Matches /shop/name, /users/name, or just the name itself
     if "reverb.com" in url:
         match = re.search(r"(?:shop|users)/([^/?#\s]+)", url)
         return match.group(1) if match else None
-    return url # Assume it's the slug if no URL is provided
+    return url
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
-st.title("🛡️ Reverb Bulk Listing Reporter")
-st.markdown("Use this to clean up shop listings that match scam patterns.")
+st.title("🛡️ Reverb Guardian: Watchdog Mode")
 
 with st.sidebar:
     st.header("1. Authentication")
@@ -27,88 +24,50 @@ with st.sidebar:
     st.header("2. Settings")
     report_reason = "scam" 
     dry_run = st.checkbox("Dry Run (Safe Mode)", value=True)
-    delay = st.slider("Request Delay (Seconds)", 1, 10, 3)
-    max_pages = st.number_input("Max Pages to Scan", min_value=1, max_value=5, value=1)
+    delay = st.slider("Check Interval (Minutes)", 1, 60, 5)
+    
+seller_url = st.text_input("Target Shop Slug/Link", placeholder="gilmars-shop-5")
 
-seller_url = st.text_input("Paste Seller Link", placeholder="https://reverb.com/shop/username")
-
-# --- Execution Logic ---
-if st.button("🚀 Start Reporting Process"):
+# --- Logic ---
+if st.button("📡 Start Watchdog"):
     slug = extract_shop_slug(seller_url)
     
-    if not api_token:
-        st.error("Missing API Token!")
-    elif not slug:
-        st.error("Could not parse a shop name from that link.")
+    if not api_token or not slug:
+        st.error("Missing Token or Shop Link!")
     else:
-        headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/hal+json",
-            "Accept": "application/hal+json",
-            "Accept-Version": "3.0"
-        }
-
-        all_listings = []
+        st.success(f"Monitoring **{slug}** every {delay} minutes. Leave this tab open.")
+        status_area = st.empty()
+        log_area = st.empty()
         
-        # --- MULTI-METHOD FETCHING ---
-        methods = [
-            {"name": "Shop API", "url": f"{REVERB_API_BASE}/shops/{slug}/listings?state=live"},
-            {"name": "Search Filter", "url": f"{REVERB_API_BASE}/listings/all?shop_name={slug}&state=live"},
-            {"name": "Keyword Query", "url": f"{REVERB_API_BASE}/listings?query={slug}&state=live"}
-        ]
-
-        for method in methods:
-            if all_listings: break # Stop if we found items
+        headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/hal+json", "Accept-Version": "3.0"}
+        
+        while True:
+            current_time = time.strftime("%H:%M:%S")
+            status_area.info(f"Last Check: {current_time} | Status: Scanning...")
             
-            st.info(f"Attempting {method['name']}...")
             try:
-                for page in range(1, max_pages + 1):
-                    paged_url = f"{method['url']}&page={page}"
-                    res = requests.get(paged_url, headers=headers)
-                    
-                    if res.status_code == 200:
-                        data = res.json()
-                        page_items = data.get("_embedded", {}).get("listings", [])
-                        
-                        # Verify the shop slug matches to prevent "2 million results" error
-                        matched_items = [i for i in page_items if i.get('shop', {}).get('slug') == slug]
-                        all_listings.extend(matched_items)
-                        
-                        if len(page_items) < 20: break # No more pages
-                    else:
-                        break # Method failed, move to next
-            except Exception as e:
-                continue
-
-        # --- PROCESS RESULTS ---
-        if not all_listings:
-            st.warning(f"⚠️ No live listings found for '{slug}'.")
-            st.info("Tip: Open the shop link in your browser. If it says 'Page Not Found', Reverb has already banned them!")
-        else:
-            st.success(f"✅ Found {len(all_listings)} listings for '{slug}'. Starting reports...")
-            progress_bar = st.progress(0)
-            
-            for idx, item in enumerate(all_listings):
-                listing_id = item.get("id")
-                title = item.get("title")
+                # Targeted check
+                res = requests.get(f"{REVERB_API_BASE}/listings/all?shop_name={slug}&state=live", headers=headers)
+                items = res.json().get("_embedded", {}).get("listings", []) if res.status_code == 200 else []
                 
-                if dry_run:
-                    st.info(f"🔍 [DRY RUN] Found: **{title}** (ID: {listing_id})")
+                # Filter strictly for the slug
+                matched = [i for i in items if i.get('shop', {}).get('slug') == slug]
+                
+                if matched:
+                    st.warning(f"🚨 ALERT: Found {len(matched)} new listings at {current_time}!")
+                    for item in matched:
+                        lid, title = item.get("id"), item.get("title")
+                        if not dry_run:
+                            requests.post(f"{REVERB_API_BASE}/listings/{lid}/flags", 
+                                          json={"reason": report_reason, "description": "Auto-reported by Guardian."}, 
+                                          headers=headers)
+                            st.write(f"✅ Auto-Reported: {title}")
+                        else:
+                            st.write(f"🔍 [DRY RUN] Found: {title}")
                 else:
-                    report_url = f"{REVERB_API_BASE}/listings/{listing_id}/flags"
-                    payload = {
-                        "reason": report_reason, 
-                        "description": "Bulk reporting coordinated fraudulent listings from this shop."
-                    }
-                    rep_resp = requests.post(report_url, json=payload, headers=headers)
+                    log_area.write(f"[{current_time}] Shop is still empty/suspended.")
                     
-                    if rep_resp.status_code in [200, 201, 204]:
-                        st.write(f"🚩 Reported: {title}")
-                    else:
-                        st.error(f"Failed {listing_id}: {rep_resp.status_code}")
-                
-                progress_bar.progress((idx + 1) / len(all_listings))
-                time.sleep(delay)
-
-            st.balloons()
-            st.success("Process Complete.")
+            except Exception as e:
+                st.error(f"Error during scan: {e}")
+            
+            time.sleep(delay * 60) # Sleep for the user-defined interval
