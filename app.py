@@ -1,56 +1,82 @@
 import streamlit as st
+import requests
 import time
 import re
-import urllib.parse
-
-def clean_id_list(input_text):
-    """Extracts all 7-10 digit numbers from text."""
-    return re.findall(r'(\d{7,10})', input_text)
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
-st.title("🛡️ Reverb Guardian: Support Bypass Mode")
+st.title("🛡️ Reverb Guardian: Session Emulation")
 
 st.markdown("""
-### ⚠️ Why are you getting 404?
-The Reverb API is blocking your account from "seeing" these scam listings because they are likely **region-locked**. 
-However, you can still report them manually using the **Direct Support Links** generated below.
+### 🛠️ How to get your Session Keys:
+1. Open the scam listing in **Chrome/Edge**.
+2. Press **F12** and go to the **Network** tab.
+3. Refresh the page. Click on the first request (the listing name).
+4. Look at **Request Headers**:
+    * Copy the entire text after `cookie:`
+    * Copy the text after `x-csrf-token:` (if present).
 """)
 
 with st.sidebar:
-    st.header("1. Settings")
-    report_reason = st.selectbox("Reason", ["Fraudulent Listing", "Off-site Transaction", "Stolen Photos"])
-    delay = st.slider("Link Generation Delay", 0.1, 2.0, 0.5)
+    st.header("1. Session Credentials")
+    user_cookie = st.text_area("Paste Cookie String:")
+    csrf_token = st.text_input("Paste X-CSRF-Token:")
+    
+    st.header("2. Settings")
+    delay = st.slider("Request Delay (Seconds)", 1, 10, 3)
 
 # --- Input Area ---
-raw_input = st.text_area("Paste Listing IDs or URLs here:", height=200, placeholder="94627157, https://reverb.com/item/94627157...")
+listing_url = st.text_input("Scam Listing URL:", placeholder="https://reverb.com/item/94627157...")
 
-if st.button("🔗 Generate Direct Report Links"):
-    if not raw_input.strip():
-        st.error("Please paste at least one ID.")
+if st.button("🚩 Report via Session"):
+    if not user_cookie:
+        st.error("You must provide a Cookie string to emulate a session.")
+    elif not listing_url:
+        st.error("Please provide a listing URL.")
     else:
-        found_ids = list(set(clean_id_list(raw_input)))
-        
-        if not found_ids:
-            st.error("❌ No valid IDs found.")
+        # Extract ID from URL
+        match = re.search(r'/item/(\d+)', listing_url)
+        if not match:
+            st.error("Invalid URL format.")
         else:
-            st.success(f"✅ Generated {len(found_ids)} human-readable report links.")
+            l_id = match.group(1)
+            st.info(f"Attempting to report ID: {l_id} using your browser session...")
+
+            # These headers make your script look like your actual browser
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": listing_url,
+                "Cookie": user_cookie,
+                "X-CSRF-Token": csrf_token,
+                "X-Requested-With": "XMLHttpRequest"
+            }
+
+            # Reverb's internal flagging endpoint (different from the API)
+            report_url = f"https://reverb.com/listings/{l_id}/flags"
             
-            st.info("Click each link below to open the official Reverb report page with the ID pre-loaded. This bypasses the API 404 error.")
-            
-            for idx, l_id in enumerate(found_ids):
-                # Constructing the manual report URL
-                # Note: Reverb often uses a help center ticket or the listing page itself for reports
-                report_url = f"https://reverb.com/item/{l_id}"
-                support_query = urllib.parse.quote(f"Reporting fraudulent listing {l_id}. Reason: {report_reason}")
-                direct_help_url = f"https://help.reverb.com/hc/en-us/requests/new?ticket_form_id=360000325514&tf_subject=Scam+Report+{l_id}&tf_description={support_query}"
+            payload = {
+                "flag": {
+                    "reason": "scam",
+                    "description": "Suspected fraudulent listing identified during manual review."
+                }
+            }
+
+            try:
+                # We use a standard POST request just like the 'Report' button does
+                response = requests.post(report_url, json=payload, headers=headers)
                 
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    st.write(f"**ID: {l_id}**")
-                with col2:
-                    st.link_button(f"🚩 Open Report Form", direct_help_url)
-                
-                time.sleep(delay)
-            
-            st.balloons()
+                if response.status_code in [200, 201, 204]:
+                    st.success(f"✅ Successfully reported {l_id} via session emulation!")
+                elif response.status_code == 422:
+                    st.error("❌ CSRF Error: Your CSRF token is missing or expired. Refresh the page and copy it again.")
+                elif response.status_code == 403:
+                    st.error("❌ Forbidden: Reverb's security (Cloudflare) blocked the request. Try a longer delay.")
+                else:
+                    st.error(f"❌ Failed with Status {response.status_code}")
+                    st.write(response.text[:500]) # Show snippet of error
+            except Exception as e:
+                st.error(f"Connection Error: {e}")
+
+            time.sleep(delay)
