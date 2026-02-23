@@ -2,35 +2,26 @@ import streamlit as st
 import requests
 import time
 import re
-import json
 
 # --- Configuration ---
 REVERB_API_BASE = "https://api.reverb.com/api"
 
-def extract_from_json_blobs(html_content):
+def clean_id_list(input_text):
     """
-    Looks for listing IDs inside script tags or JSON blocks 
-    that Reverb uses to 'hydrate' the page.
+    Extracts all 7-10 digit numbers from a block of text.
+    Allows the user to paste URLs, a list, or even raw notes.
     """
-    # Find all 7-9 digit numbers that look like Reverb IDs
-    # and are likely associated with a listing key
-    patterns = [
-        r'["\']listing_id["\']\s*:\s*(\d{7,9})',
-        r'["\']id["\']\s*:\s*(\d{7,9})',
-        r'/item/(\d{7,9})',
-        r'listing_id=(\d{7,9})'
-    ]
-    
-    found = set()
-    for pattern in patterns:
-        matches = re.findall(pattern, html_content)
-        found.update(matches)
-        
-    return sorted(list(found))
+    return re.findall(r'(\d{7,10})', input_text)
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
-st.title("🛡️ Reverb Guardian: JSON Forensic Mode")
+st.title("🛡️ Reverb Guardian: Failsafe Mode")
+st.markdown("""
+### 🎯 How to use this:
+1. Open the scammer's shop.
+2. Click on a few listings and copy the numbers from the URL (e.g., `reverb.com/item/**84756321**`).
+3. Paste all those numbers (or the full URLs) into the box below.
+""")
 
 with st.sidebar:
     st.header("1. Authentication")
@@ -41,23 +32,22 @@ with st.sidebar:
     dry_run = st.checkbox("Dry Run (Safe Mode)", value=True)
     delay = st.slider("Request Delay (Seconds)", 1, 10, 2)
 
-st.warning("⚠️ **Important:** To get the full source, scroll to the bottom of the shop page first, THEN press **Ctrl+U**.")
-manual_html = st.text_area("Paste 'View Source' Code Here", height=400)
+# --- Input Area ---
+raw_input = st.text_area("Paste Listing IDs or URLs here:", height=200, placeholder="87654321, 87654322, https://reverb.com/item/87654323...")
 
-if st.button("🚀 Execute JSON Extraction"):
+if st.button("🚩 Start Bulk Reporting"):
     if not api_token:
-        st.error("Missing API Token!")
-    elif not manual_html.strip():
-        st.error("Paste the source code first!")
+        st.error("Please provide your API token in the sidebar.")
+    elif not raw_input.strip():
+        st.error("Please paste at least one Listing ID or URL.")
     else:
-        st.info("Parsing hidden data structures...")
-        found_ids = extract_from_json_blobs(manual_html)
-            
+        # Extract and de-duplicate IDs
+        found_ids = list(set(clean_id_list(raw_input)))
+        
         if not found_ids:
-            st.error("❌ No IDs found. Reverb might be hiding the data in a non-standard format.")
-            st.info("Try this: Inspect one listing title in your browser, find the `id`, and paste it manually.")
+            st.error("❌ No valid 7-10 digit IDs found in your text.")
         else:
-            st.success(f"🎯 Success! Extracted {len(found_ids)} unique Listing IDs.")
+            st.success(f"✅ Found {len(found_ids)} unique IDs. Starting process...")
             
             headers = {
                 "Authorization": f"Bearer {api_token}",
@@ -67,19 +57,34 @@ if st.button("🚀 Execute JSON Extraction"):
             }
             
             progress = st.progress(0)
+            status_text = st.empty()
+            
             for idx, l_id in enumerate(found_ids):
+                status_text.text(f"Processing {idx+1}/{len(found_ids)}: ID {l_id}")
+                
                 if dry_run:
-                    st.info(f"🔍 [DRY RUN] Found: **{l_id}**")
+                    st.info(f"🔍 [DRY RUN] Ready to report Listing: **{l_id}**")
                 else:
                     flag_url = f"{REVERB_API_BASE}/listings/{l_id}/flags"
-                    payload = {"reason": report_reason, "description": "Coordinated fraudulent listings identified via shop source."}
-                    f_resp = requests.post(flag_url, json=payload, headers=headers)
-                    if f_resp.status_code in [200, 201, 204]:
-                        st.write(f"🚩 Reported ID: {l_id}")
-                    else:
-                        st.error(f"Failed {l_id}: {f_resp.status_code}")
+                    payload = {
+                        "reason": report_reason, 
+                        "description": "Part of a coordinated scam shop. Reporting for immediate review."
+                    }
+                    
+                    try:
+                        f_resp = requests.post(flag_url, json=payload, headers=headers)
+                        if f_resp.status_code in [200, 201, 204]:
+                            st.write(f"🚩 **Success:** Reported {l_id}")
+                        elif f_resp.status_code == 404:
+                            st.warning(f"⚠️ **Notice:** {l_id} was not found (might already be deleted).")
+                        else:
+                            st.error(f"❌ **Error {f_resp.status_code}** for {l_id}")
+                    except Exception as e:
+                        st.error(f"Connection error for {l_id}: {e}")
                 
+                # Update progress
                 progress.progress((idx + 1) / len(found_ids))
                 time.sleep(delay)
             
             st.balloons()
+            st.success("Finished processing all IDs.")
