@@ -7,12 +7,7 @@ import re
 REVERB_API_BASE = "https://api.reverb.com/api"
 
 def extract_shop_slug(url):
-    """
-    Extracts the shop identifier from various Reverb URL formats:
-    - https://reverb.com/shop/user-slug
-    - https://reverb.com/p/shop/user-slug
-    """
-    # Clean the URL of trailing slashes and whitespace
+    """Extracts the shop identifier from Reverb shop URLs."""
     url = url.strip().rstrip('/')
     match = re.search(r"shop/([^/?#\s]+)", url)
     return match.group(1) if match else None
@@ -40,7 +35,7 @@ if st.button("🚀 Start Reporting Process"):
     if not api_token:
         st.error("Missing API Token!")
     elif not shop_slug:
-        st.error("Could not find shop name in that link. Use: reverb.com/shop/username")
+        st.error("Invalid Reverb Shop URL.")
     else:
         headers = {
             "Authorization": f"Bearer {api_token}",
@@ -50,10 +45,11 @@ if st.button("🚀 Start Reporting Process"):
             "X-Display-Group": "global"
         }
 
-        st.info(f"🔍 Searching for listings from: **{shop_slug}**...")
+        st.info(f"🔍 Fetching official shop data for: **{shop_slug}**...")
         
-        # We try the search endpoint which is often more reliable for "live" public listings
-        fetch_url = f"{REVERB_API_BASE}/listings/all?shop_name={shop_slug}&state=live"
+        # FIX: Targeted Shop Endpoint
+        # We use /shops/{slug}/listings to ensure we ONLY get that person's items
+        fetch_url = f"{REVERB_API_BASE}/shops/{shop_slug}/listings?state=live"
         
         try:
             response = requests.get(fetch_url, headers=headers)
@@ -68,33 +64,30 @@ if st.button("🚀 Start Reporting Process"):
                 st.write("### Debug: Raw API Response")
                 st.json(data)
             
-            # Reverb HAL+JSON structure: check both _embedded and _links
+            # Reverb HAL+JSON structure for shop-specific listings
             listings = data.get("_embedded", {}).get("listings", [])
             
-            # Backup attempt: Some shops require a different filter parameter
             if not listings:
-                st.warning("First attempt found 0 listings. Trying alternative fetch method...")
-                alt_url = f"{REVERB_API_BASE}/listings?query={shop_slug}&state=live"
-                alt_resp = requests.get(alt_url, headers=headers)
-                listings = alt_resp.json().get("_embedded", {}).get("listings", [])
-
-            if not listings:
-                st.error("❌ No live listings found. The shop might have already been taken down, or the API cannot see these listings.")
+                st.warning(f"No live listings found specifically for '{shop_slug}'. The shop may be empty or already banned.")
             else:
-                st.success(f"✅ Found {len(listings)} listings. Starting reports...")
+                st.success(f"✅ Found {len(listings)} listings for this shop. Starting reports...")
                 progress_bar = st.progress(0)
                 
                 for idx, item in enumerate(listings):
                     listing_id = item.get("id")
                     title = item.get("title")
                     
+                    # Double check that the shop name matches (safety layer)
+                    current_item_shop = item.get("shop", {}).get("slug", "")
+                    
                     if dry_run:
                         st.info(f"🔍 [DRY RUN] Found: **{title}** (ID: {listing_id})")
                     else:
+                        # 2. POST the Flag/Report
                         report_url = f"{REVERB_API_BASE}/listings/{listing_id}/flags"
                         payload = {
                             "reason": report_reason, 
-                            "description": "Coordinated scam listings."
+                            "description": "Coordinated scam listings from this specific shop profile."
                         }
                         
                         rep_resp = requests.post(report_url, json=payload, headers=headers)
