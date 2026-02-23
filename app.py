@@ -19,16 +19,13 @@ def extract_listings_via_scrape(shop_url):
             return []
         
         soup = BeautifulSoup(response.text, "html.parser")
-        
-        # Reverb listings usually have a data-listing-id attribute 
-        # or IDs embedded in links like /item/12345678-title
         listing_ids = set()
         
         # Method A: Look for data attributes
         for tag in soup.find_all(attrs={"data-listing-id": True}):
             listing_ids.add(tag["data-listing-id"])
             
-        # Method B: Regex search in links if Method A fails
+        # Method B: Regex search in links
         if not listing_ids:
             links = soup.find_all("a", href=re.compile(r"/item/(\d+)"))
             for link in links:
@@ -44,7 +41,6 @@ def extract_listings_via_scrape(shop_url):
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🛡️")
 st.title("🛡️ Reverb Guardian: Web Scraper Mode")
-st.markdown("Bypasses API blocks by reading the shop page directly.")
 
 with st.sidebar:
     st.header("1. Authentication")
@@ -65,9 +61,9 @@ if st.button("🔍 Scrape & Report"):
         found_ids = extract_listings_via_scrape(shop_link)
         
         if not found_ids:
-            st.warning("No listing IDs found on the page. Ensure the URL is a direct link to the shop's listings.")
+            st.warning("No listings found. The shop might be empty or protected by a captcha.")
         else:
-            st.success(f"🎯 Detected {len(found_ids)} listings in the HTML! Starting reports...")
+            st.success(f"🎯 Detected {len(found_ids)} listings! Starting reports...")
             
             headers = {
                 "Authorization": f"Bearer {api_token}",
@@ -79,10 +75,10 @@ if st.button("🔍 Scrape & Report"):
             progress = st.progress(0)
             for idx, l_id in enumerate(found_ids):
                 if dry_run:
-                    st.info(f"🔍 [DRY RUN] Would report Listing ID: **{l_id}**")
+                    st.info(f"🔍 [DRY RUN] Found Listing: **{l_id}**")
                 else:
                     flag_url = f"{REVERB_API_BASE}/listings/{l_id}/flags"
-                    payload = {"reason": report_reason, "description": "Reporting fraudulent listings identified via shop scan."}
+                    payload = {"reason": report_reason, "description": "Automated report for fraudulent shop patterns."}
                     f_resp = requests.post(flag_url, json=payload, headers=headers)
                     
                     if f_resp.status_code in [200, 201, 204]:
