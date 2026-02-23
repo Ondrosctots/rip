@@ -7,26 +7,31 @@ import re
 REVERB_API_BASE = "https://api.reverb.com/api"
 
 def extract_shop_slug(url):
-    """Extracts 'shop-name' from https://reverb.com/shop/shop-name"""
-    # Regex to handle various URL formats and trailing slashes
-    match = re.search(r"reverb\.com/shop/([^/?#\s]+)", url)
+    """
+    Extracts the shop identifier from various Reverb URL formats:
+    - https://reverb.com/shop/user-slug
+    - https://reverb.com/p/shop/user-slug
+    """
+    # Clean the URL of trailing slashes and whitespace
+    url = url.strip().rstrip('/')
+    match = re.search(r"shop/([^/?#\s]+)", url)
     return match.group(1) if match else None
 
 # --- UI Setup ---
 st.set_page_config(page_title="Reverb Guardian", page_icon="🎸")
 st.title("🎸 Reverb Bulk Listing Reporter")
-st.markdown("Automate the reporting of fraudulent listings from a specific shop.")
 
 with st.sidebar:
-    st.header("Authentication")
-    api_token = st.text_input("Reverb API Token", type="password", help="Get this from your Reverb Account Settings > API Applications.")
+    st.header("1. Authentication")
+    api_token = st.text_input("Reverb API Token", type="password")
     
-    st.header("Settings")
+    st.header("2. Settings")
     report_reason = "scam" 
-    dry_run = st.checkbox("Dry Run (Don't actually report)", value=True, help="Keep this checked to test if it finds listings without reporting them.")
-    delay = st.slider("Delay between reports (seconds)", 1, 10, 3)
+    dry_run = st.checkbox("Dry Run (Safe Mode)", value=True)
+    delay = st.slider("Request Delay (Seconds)", 1, 10, 3)
+    debug_mode = st.checkbox("Show Raw API Data", value=False)
 
-seller_url = st.text_input("Paste Seller Shop Link", placeholder="https://reverb.com/shop/username")
+seller_url = st.text_input("Paste Seller Shop Link", placeholder="https://reverb.com/shop/gilmars-shop-5")
 
 # --- Execution Logic ---
 if st.button("🚀 Start Reporting Process"):
@@ -35,9 +40,8 @@ if st.button("🚀 Start Reporting Process"):
     if not api_token:
         st.error("Missing API Token!")
     elif not shop_slug:
-        st.error("Invalid Reverb Shop URL. Please use the format: reverb.com/shop/username")
+        st.error("Could not find shop name in that link. Use: reverb.com/shop/username")
     else:
-        # Reverb requires 'Accept-Version: 3.0' to correctly parse many shop queries
         headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/hal+json",
@@ -46,30 +50,38 @@ if st.button("🚀 Start Reporting Process"):
             "X-Display-Group": "global"
         }
 
-        # 1. Fetch Listings
-        st.info(f"🔍 Fetching live listings for: **{shop_slug}**...")
+        st.info(f"🔍 Searching for listings from: **{shop_slug}**...")
         
-        # Using 'shop_name' instead of 'shop' is more reliable for the 'listings/all' endpoint
+        # We try the search endpoint which is often more reliable for "live" public listings
         fetch_url = f"{REVERB_API_BASE}/listings/all?shop_name={shop_slug}&state=live"
         
         try:
             response = requests.get(fetch_url, headers=headers)
             
-            # Error handling to catch exactly why Reverb rejected the request
             if response.status_code != 200:
                 st.error(f"Reverb Error {response.status_code}: {response.text}")
                 st.stop()
                 
             data = response.json()
             
-            # Reverb's HAL+JSON structure stores listings in _embedded
+            if debug_mode:
+                st.write("### Debug: Raw API Response")
+                st.json(data)
+            
+            # Reverb HAL+JSON structure: check both _embedded and _links
             listings = data.get("_embedded", {}).get("listings", [])
             
+            # Backup attempt: Some shops require a different filter parameter
             if not listings:
-                st.warning("No live listings found for this shop. Check the shop link or API token permissions.")
+                st.warning("First attempt found 0 listings. Trying alternative fetch method...")
+                alt_url = f"{REVERB_API_BASE}/listings?query={shop_slug}&state=live"
+                alt_resp = requests.get(alt_url, headers=headers)
+                listings = alt_resp.json().get("_embedded", {}).get("listings", [])
+
+            if not listings:
+                st.error("❌ No live listings found. The shop might have already been taken down, or the API cannot see these listings.")
             else:
-                st.success(f"Found {len(listings)} listings. Starting reports...")
-                
+                st.success(f"✅ Found {len(listings)} listings. Starting reports...")
                 progress_bar = st.progress(0)
                 
                 for idx, item in enumerate(listings):
@@ -77,28 +89,26 @@ if st.button("🚀 Start Reporting Process"):
                     title = item.get("title")
                     
                     if dry_run:
-                        st.write(f"🔍 [DRY RUN] Would report: **{title}** (ID: {listing_id})")
+                        st.info(f"🔍 [DRY RUN] Found: **{title}** (ID: {listing_id})")
                     else:
-                        # 2. POST the Flag/Report
                         report_url = f"{REVERB_API_BASE}/listings/{listing_id}/flags"
                         payload = {
                             "reason": report_reason, 
-                            "description": "Coordinated scam listings detected by automated monitoring tool."
+                            "description": "Coordinated scam listings."
                         }
                         
                         rep_resp = requests.post(report_url, json=payload, headers=headers)
                         
                         if rep_resp.status_code in [200, 201, 204]:
-                            st.write(f"✅ Reported: {title}")
+                            st.write(f"🚩 Reported: {title}")
                         else:
-                            st.error(f"❌ Failed to report {listing_id}: {rep_resp.status_code} - {rep_resp.text}")
+                            st.error(f"Failed {listing_id}: {rep_resp.status_code}")
                     
-                    # Update Progress
                     progress_bar.progress((idx + 1) / len(listings))
-                    time.sleep(delay) # Prevent API rate-limiting
+                    time.sleep(delay)
 
                 st.balloons()
-                st.success("Finished processing all listings.")
+                st.success("Process Complete.")
 
         except Exception as e:
             st.error(f"System Error: {e}")
